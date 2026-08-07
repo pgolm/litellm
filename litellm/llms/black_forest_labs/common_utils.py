@@ -13,6 +13,7 @@ from urllib.parse import urlparse
 from typing_extensions import assert_never
 
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
+from litellm.types.llms.openai import OpenAIImageGenerationOptionalParams
 
 
 class BlackForestLabsError(BaseLLMException):
@@ -65,20 +66,18 @@ DEFAULT_MAX_POLLING_TIME: Final = 300  # 5 minutes
 
 PromptUpsamplingField = Literal["prompt_upsampling", "disable_pup"]
 
-_FLUX_2_COMMON_REQUEST_PARAMS: Final = frozenset({"width", "height", "seed", "safety_tolerance", "output_format"})
-_FLUX_2_STEP_CONTROL_REQUEST_PARAMS: Final = frozenset({"guidance", "steps"})
+_FLUX_2_COMMON_REQUEST_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset(
+    {"width", "height", "seed", "safety_tolerance", "output_format"}
+)
+_FLUX_2_STEP_CONTROL_REQUEST_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset(
+    {"guidance", "steps"}
+)
+_FLUX_2_UPSAMPLING_PARAM: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"prompt_upsampling"})
 
 
 @dataclass(frozen=True, slots=True)
 class Flux2ModelSpec:
-    """Endpoint and parameter surface of a single FLUX.2 model.
-
-    Every FLUX.2 endpoint serves both text-to-image and editing: the reference
-    images are optional inputs of the same request. The variants differ in how
-    many references they accept, whether they expose the diffusion dial
-    (``steps``/``guidance``), and how prompt upsampling is spelled on the wire
-    (``[pro]``/``[max]`` invert it as ``disable_pup``, ``[klein]`` has no knob).
-    """
+    """Endpoint and parameter surface of a single FLUX.2 model."""
 
     endpoint: str
     max_reference_images: int
@@ -86,22 +85,18 @@ class Flux2ModelSpec:
     supports_step_control: bool
 
     @property
-    def request_params(self) -> frozenset[str]:
+    def request_params(self) -> frozenset[OpenAIImageGenerationOptionalParams]:
         """Wire field names accepted besides ``prompt``, the references and upsampling."""
         if self.supports_step_control:
             return _FLUX_2_COMMON_REQUEST_PARAMS | _FLUX_2_STEP_CONTROL_REQUEST_PARAMS
         return _FLUX_2_COMMON_REQUEST_PARAMS
 
     @property
-    def tunable_params(self) -> frozenset[str]:
-        """Knobs a caller may set, i.e. the wire fields plus the canonical upsampling flag.
-
-        Callers always spell upsampling as ``prompt_upsampling``; the inverted
-        ``disable_pup`` spelling ``[pro]``/``[max]`` want is applied on the wire.
-        """
+    def tunable_params(self) -> frozenset[OpenAIImageGenerationOptionalParams]:
+        """Knobs a caller may set: the wire fields plus the canonical ``prompt_upsampling`` flag."""
         if self.prompt_upsampling_field is None:
             return self.request_params
-        return self.request_params | frozenset({"prompt_upsampling"})
+        return self.request_params | _FLUX_2_UPSAMPLING_PARAM
 
 
 FLUX_2_MODELS: Final[Mapping[str, Flux2ModelSpec]] = MappingProxyType(
@@ -185,7 +180,7 @@ def build_flux_2_request_body(
     passthrough: Final = tuple(
         (key, value) for key, value in optional_params.items() if key in spec.request_params and value is not None
     )
-    return dict(  # mutable-ok: httpx serializes the request body with json.dumps, which only accepts a real dict
+    return dict(  # mutable-ok: the BaseImageGenerationConfig/BaseImageEditConfig contract returns a real dict
         (
             ("prompt", prompt),
             ("output_format", DEFAULT_OUTPUT_FORMAT),

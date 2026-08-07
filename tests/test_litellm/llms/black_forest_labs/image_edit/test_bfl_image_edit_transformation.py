@@ -442,6 +442,47 @@ class TestFlux2ImageEdit:
             "input_image": _b64(b"first"),
         }
 
+    def test_map_openai_params_keeps_the_dimensions_it_advertises(self):
+        """width/height are in tunable_params, so they must survive mapping instead of being dropped."""
+        mapped = self.config.map_openai_params(
+            ImageEditOptionalRequestParams(width=1440, height=2048),
+            "flux-2-pro",
+            drop_params=False,
+        )
+
+        assert mapped == {"output_format": "png", "width": 1440, "height": 2048}
+
+    def test_advertised_edit_params_all_reach_the_wire(self):
+        """Every param get_supported_openai_params promises has to survive mapping and transformation."""
+        advertised = [param for param in self.config.get_supported_openai_params("flux-2-flex") if param != "steps"]
+        sample = {"width": 1024, "height": 768, "seed": 7, "safety_tolerance": 2, "output_format": "jpeg"}
+        sample.update({"guidance": 3.5, "prompt_upsampling": True})
+
+        mapped = self.config.map_openai_params(sample, "flux-2-flex", drop_params=False)
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-flex",
+            prompt=self.prompt,
+            image=b"first",
+            image_edit_optional_request_params=mapped,
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert set(advertised) <= set(body)
+        assert body["width"] == 1024
+        assert body["height"] == 768
+        assert body["output_format"] == "jpeg"
+
+    def test_map_openai_params_drops_flux_1_only_params(self):
+        """A FLUX.1 param that slips through must not survive mapping for a FLUX.2 model."""
+        mapped = self.config.map_openai_params(
+            {"aspect_ratio": "16:9", "grow_mask": 8, "top": 64, "seed": 11},
+            "flux-2-pro",
+            drop_params=False,
+        )
+
+        assert mapped == {"output_format": "png", "seed": 11}
+
     def test_map_openai_params_keeps_flex_step_control(self):
         mapped = self.config.map_openai_params(
             ImageEditOptionalRequestParams(steps=20, guidance=3.5, seed=11),

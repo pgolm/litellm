@@ -29,6 +29,7 @@ from ..common_utils import (
     BlackForestLabsError,
     build_flux_2_request_body,
     get_flux_2_model_spec,
+    strip_provider_prefix,
 )
 
 if TYPE_CHECKING:
@@ -39,11 +40,7 @@ else:
     LiteLLMLoggingObj = Any
 
 
-_FLUX_2_OPENAI_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset(
-    {"n", "size", "width", "height", "seed", "output_format", "safety_tolerance"}
-)
-_FLUX_2_UPSAMPLING_PARAM: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"prompt_upsampling"})
-_FLUX_2_STEP_CONTROL_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"guidance", "steps"})
+_FLUX_2_SIZE_PARAM: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"size"})
 
 
 class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
@@ -70,11 +67,7 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
         """
         flux_2_spec: Final = get_flux_2_model_spec(model)
         if flux_2_spec is not None:
-            return sorted(
-                _FLUX_2_OPENAI_PARAMS
-                | (_FLUX_2_UPSAMPLING_PARAM if flux_2_spec.prompt_upsampling_field is not None else frozenset())
-                | (_FLUX_2_STEP_CONTROL_PARAMS if flux_2_spec.supports_step_control else frozenset())
-            )
+            return sorted(flux_2_spec.tunable_params | _FLUX_2_SIZE_PARAM)
 
         return [
             "n",  # Number of images (BFL returns 1 per request, but ultra supports up to 4)
@@ -191,12 +184,8 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
         """
         Get the API endpoint for a given model.
         """
-        # Remove provider prefix if present (e.g., "black_forest_labs/flux-pro-1.1")
-        model_name = model.lower()
-        if "/" in model_name:
-            model_name = model_name.split("/")[-1]
+        model_name: Final = strip_provider_prefix(model)
 
-        # Check if model is in our mapping
         if model_name in IMAGE_GENERATION_MODELS:
             return IMAGE_GENERATION_MODELS[model_name]
 

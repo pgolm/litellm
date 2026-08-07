@@ -418,6 +418,16 @@ class TestFlux2ImageGeneration:
         assert "num_images" not in params
         assert "image_prompt_strength" not in params
 
+    @pytest.mark.parametrize("model", sorted(FLUX_2_ENDPOINTS))
+    def test_n_is_not_advertised(self, model):
+        """No FLUX.2 endpoint takes num_images, so advertising n would silently return one image."""
+        assert "n" not in self.config.get_supported_openai_params(model)
+
+    @pytest.mark.parametrize("model", sorted(FLUX_2_ENDPOINTS))
+    def test_n_is_rejected_rather_than_ignored(self, model):
+        with pytest.raises(ValueError, match="Parameter n is not supported"):
+            self.config.map_openai_params({"n": 4}, {}, model, drop_params=False)
+
     def test_size_maps_to_width_and_height(self):
         optional_params = self.config.map_openai_params({"size": "1440x2048"}, {}, "flux-2-pro", drop_params=False)
 

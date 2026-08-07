@@ -33,6 +33,7 @@ from ..common_utils import (
     build_flux_2_request_body,
     flux_2_reference_image_field,
     get_flux_2_model_spec,
+    strip_provider_prefix,
 )
 
 if TYPE_CHECKING:
@@ -41,6 +42,24 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
     LiteLLMLoggingObj = Any
+
+
+_FLUX_1_EDIT_PARAMS: Final[frozenset[str]] = frozenset(
+    {
+        "seed",
+        "output_format",
+        "safety_tolerance",
+        "prompt_upsampling",
+        "aspect_ratio",
+        "steps",
+        "guidance",
+        "grow_mask",
+        "top",
+        "bottom",
+        "left",
+        "right",
+    }
+)
 
 
 class BlackForestLabsImageEditConfig(BaseImageEditConfig):
@@ -69,21 +88,7 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         if flux_2_spec is not None:
             return sorted(flux_2_spec.tunable_params)
 
-        return [
-            "mask",
-            "seed",
-            "output_format",
-            "safety_tolerance",
-            "prompt_upsampling",
-            "aspect_ratio",
-            "steps",
-            "guidance",
-            "grow_mask",
-            "top",
-            "bottom",
-            "left",
-            "right",
-        ]
+        return ["mask", *sorted(_FLUX_1_EDIT_PARAMS)]
 
     def map_openai_params(
         self,
@@ -94,43 +99,21 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         """
         Map OpenAI parameters to Black Forest Labs parameters.
 
-        BFL-specific params are passed through directly.
+        BFL-specific params are passed through directly. Unsupported params are already
+        rejected or dropped by ImageEditRequestUtils.get_optional_params_image_edit.
         """
-        optional_params: Final[dict[str, Any]] = {}
+        flux_2_spec: Final = get_flux_2_model_spec(model)
+        passthrough_params: Final[frozenset[str]] = (
+            flux_2_spec.tunable_params if flux_2_spec is not None else _FLUX_1_EDIT_PARAMS
+        )
 
-        # Pass through BFL-specific params
-        bfl_params: Final = [
-            "seed",
-            "output_format",
-            "safety_tolerance",
-            "prompt_upsampling",
-            # Kontext-specific
-            "aspect_ratio",
-            # Fill/Inpaint-specific
-            "steps",
-            "guidance",
-            "grow_mask",
-            # Expand-specific
-            "top",
-            "bottom",
-            "left",
-            "right",
-        ]
+        optional_params: Final[dict[str, Any]] = {
+            param: value
+            for param, value in image_edit_optional_params.items()
+            if param in passthrough_params and value is not None
+        }
 
-        # Convert TypedDict to regular dict for access
-        params_dict: Final = dict(image_edit_optional_params)
-
-        for param in bfl_params:
-            if param in params_dict:
-                value = params_dict[param]
-                if value is not None:
-                    optional_params[param] = value
-
-        # Set default output format
-        if "output_format" not in optional_params:
-            optional_params["output_format"] = DEFAULT_OUTPUT_FORMAT
-
-        return optional_params
+        return {"output_format": DEFAULT_OUTPUT_FORMAT, **optional_params}
 
     def validate_environment(
         self,
@@ -171,12 +154,8 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         """
         Get the API endpoint for a given model.
         """
-        # Remove provider prefix if present (e.g., "black_forest_labs/flux-kontext-pro")
-        model_name = model.lower()
-        if "/" in model_name:
-            model_name = model_name.split("/")[-1]
+        model_name: Final = strip_provider_prefix(model)
 
-        # Check if model is in our mapping
         if model_name in IMAGE_EDIT_MODELS:
             return IMAGE_EDIT_MODELS[model_name]
 
@@ -280,22 +259,8 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         }
 
         # Add optional params (only BFL-recognized parameters)
-        bfl_request_params: Final = [
-            "seed",
-            "output_format",
-            "safety_tolerance",
-            "prompt_upsampling",
-            "aspect_ratio",
-            "steps",
-            "guidance",
-            "grow_mask",
-            "top",
-            "bottom",
-            "left",
-            "right",
-        ]
         for key, value in image_edit_optional_request_params.items():
-            if key in bfl_request_params and value is not None:
+            if key in _FLUX_1_EDIT_PARAMS and value is not None:
                 request_body[key] = value
 
         # Handle mask if provided (for inpainting)
