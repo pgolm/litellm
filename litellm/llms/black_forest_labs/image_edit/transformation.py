@@ -9,6 +9,7 @@ API Reference: https://docs.bfl.ai/
 
 import base64
 import time
+from collections.abc import Mapping, Sequence
 from typing import TYPE_CHECKING, Any, Final
 
 import httpx
@@ -25,8 +26,13 @@ from litellm.types.utils import FileTypes, ImageObject, ImageResponse
 
 from ..common_utils import (
     DEFAULT_API_BASE,
+    DEFAULT_OUTPUT_FORMAT,
     IMAGE_EDIT_MODELS,
     BlackForestLabsError,
+    Flux2ModelSpec,
+    build_flux_2_request_body,
+    flux_2_reference_image_field,
+    get_flux_2_model_spec,
 )
 
 if TYPE_CHECKING:
@@ -46,6 +52,8 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
     - flux-kontext-max: Premium quality editing
     - flux-pro-1.0-fill: Inpainting with mask
     - flux-pro-1.0-expand: Outpainting (expand image borders)
+    - flux-2-*: FLUX.2 variants, which edit against up to 8 reference images
+      (4 for [klein]) through the same endpoint they use for text-to-image
 
     Note: HTTP requests and polling are handled by the handler (handler.py).
     This class only handles data transformation.
@@ -57,6 +65,10 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
 
         Note: BFL uses different parameter names, these are mapped in map_openai_params.
         """
+        flux_2_spec: Final = get_flux_2_model_spec(model)
+        if flux_2_spec is not None:
+            return sorted(flux_2_spec.tunable_params)
+
         return [
             "mask",
             "seed",
@@ -116,7 +128,7 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
 
         # Set default output format
         if "output_format" not in optional_params:
-            optional_params["output_format"] = "png"
+            optional_params["output_format"] = DEFAULT_OUTPUT_FORMAT
 
         return optional_params
 
@@ -231,7 +243,7 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         self,
         model: str,
         prompt: str | None,
-        image: FileTypes | None,
+        image: FileTypes | list[FileTypes] | None,
         image_edit_optional_request_params: dict,
         litellm_params: GenericLiteLLMParams,
         headers: dict,
@@ -241,8 +253,24 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
 
         BFL uses JSON body with base64-encoded images, not multipart/form-data.
         """
+        images: Final = tuple(image) if isinstance(image, list) else (image,)
+        if not images or images[0] is None:
+            raise BlackForestLabsError(status_code=400, message="No image provided")
+
+        flux_2_spec: Final = get_flux_2_model_spec(model)
+        if flux_2_spec is not None:
+            return (
+                self._transform_flux_2_edit_request(
+                    spec=flux_2_spec,
+                    prompt=prompt or "",
+                    images=images,
+                    optional_params=image_edit_optional_request_params,
+                ),
+                [],
+            )
+
         # Read and encode image
-        image_bytes: Final = self._read_image_bytes(image)
+        image_bytes: Final = self._read_image_bytes(images[0])
         b64_image: Final = base64.b64encode(image_bytes).decode("utf-8")
 
         # Build request body
@@ -278,6 +306,37 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
 
         # BFL uses JSON, not multipart - return empty files
         return request_body, []
+
+    def _transform_flux_2_edit_request(
+        self,
+        spec: Flux2ModelSpec,
+        prompt: str,
+        images: Sequence[FileTypes],
+        optional_params: Mapping[str, object],
+    ) -> dict[str, object]:
+        """Build a FLUX.2 edit body, spreading the references over ``input_image``/``input_image_N``."""
+        if len(images) > spec.max_reference_images:
+            raise BlackForestLabsError(
+                status_code=400,
+                message=(
+                    f"{spec.endpoint} accepts at most {spec.max_reference_images} reference "
+                    f"image(s), got {len(images)}."
+                ),
+            )
+
+        references: Final = tuple(
+            (
+                flux_2_reference_image_field(index),
+                base64.b64encode(self._read_image_bytes(reference)).decode("utf-8"),
+            )
+            for index, reference in enumerate(images)
+        )
+        return build_flux_2_request_body(
+            spec=spec,
+            prompt=prompt,
+            optional_params=optional_params,
+            extra_fields=references,
+        )
 
     def transform_image_edit_response(
         self,

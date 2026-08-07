@@ -24,8 +24,11 @@ from litellm.types.utils import ImageObject, ImageResponse
 
 from ..common_utils import (
     DEFAULT_API_BASE,
+    DEFAULT_OUTPUT_FORMAT,
     IMAGE_GENERATION_MODELS,
     BlackForestLabsError,
+    build_flux_2_request_body,
+    get_flux_2_model_spec,
 )
 
 if TYPE_CHECKING:
@@ -34,6 +37,13 @@ if TYPE_CHECKING:
     LiteLLMLoggingObj = _LiteLLMLoggingObj
 else:
     LiteLLMLoggingObj = Any
+
+
+_FLUX_2_OPENAI_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset(
+    {"n", "size", "width", "height", "seed", "output_format", "safety_tolerance"}
+)
+_FLUX_2_UPSAMPLING_PARAM: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"prompt_upsampling"})
+_FLUX_2_STEP_CONTROL_PARAMS: Final[frozenset[OpenAIImageGenerationOptionalParams]] = frozenset({"guidance", "steps"})
 
 
 class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
@@ -45,6 +55,8 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
     - flux-pro-1.1-ultra: Ultra high-resolution (up to 4MP)
     - flux-dev: Development/open-source variant
     - flux-pro: Original pro model
+    - flux-2-max / flux-2-pro / flux-2-pro-preview / flux-2-flex: FLUX.2 premium variants
+    - flux-2-klein-9b / flux-2-klein-9b-preview / flux-2-klein-4b: FLUX.2 open-weight variants
 
     Note: HTTP requests and polling are handled by the handler (handler.py).
     This class only handles data transformation.
@@ -56,6 +68,14 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
 
         Note: BFL uses different parameter names, these are mapped in map_openai_params.
         """
+        flux_2_spec: Final = get_flux_2_model_spec(model)
+        if flux_2_spec is not None:
+            return sorted(
+                _FLUX_2_OPENAI_PARAMS
+                | (_FLUX_2_UPSAMPLING_PARAM if flux_2_spec.prompt_upsampling_field is not None else frozenset())
+                | (_FLUX_2_STEP_CONTROL_PARAMS if flux_2_spec.supports_step_control else frozenset())
+            )
+
         return [
             "n",  # Number of images (BFL returns 1 per request, but ultra supports up to 4)
             "size",  # Maps to width/height or aspect_ratio
@@ -216,6 +236,14 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
 
         https://docs.bfl.ai/flux_models/flux_1_1_pro
         """
+        flux_2_spec: Final = get_flux_2_model_spec(model)
+        if flux_2_spec is not None:
+            return build_flux_2_request_body(
+                spec=flux_2_spec,
+                prompt=prompt,
+                optional_params=optional_params,
+            )
+
         # Build request body with prompt
         request_body: Final[dict[str, Any]] = {
             "prompt": prompt,
@@ -243,7 +271,7 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
 
         # Set default output format if not specified
         if "output_format" not in request_body:
-            request_body["output_format"] = "png"
+            request_body["output_format"] = DEFAULT_OUTPUT_FORMAT
 
         return request_body
 

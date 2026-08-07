@@ -13,9 +13,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import httpx
 import pytest
 
-sys.path.insert(
-    0, os.path.abspath("../../../../..")
-)  # Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath("../../../../.."))  # Adds the parent directory to the system path
 
 from litellm.llms.black_forest_labs.image_generation.transformation import (
     BlackForestLabsImageGenerationConfig,
@@ -50,9 +48,7 @@ class TestBlackForestLabsImageGenerationTransformation:
         non_default_params = {}
         optional_params = {}
 
-        result = self.config.map_openai_params(
-            non_default_params, optional_params, self.model, drop_params=False
-        )
+        result = self.config.map_openai_params(non_default_params, optional_params, self.model, drop_params=False)
 
         # Empty input should return empty output
         assert result == {}
@@ -62,9 +58,7 @@ class TestBlackForestLabsImageGenerationTransformation:
         non_default_params = {"size": "1024x1024"}
         optional_params = {}
 
-        result = self.config.map_openai_params(
-            non_default_params, optional_params, self.model, drop_params=False
-        )
+        result = self.config.map_openai_params(non_default_params, optional_params, self.model, drop_params=False)
 
         assert result["width"] == 1024
         assert result["height"] == 1024
@@ -74,9 +68,7 @@ class TestBlackForestLabsImageGenerationTransformation:
         non_default_params = {"size": "800x600"}
         optional_params = {}
 
-        result = self.config.map_openai_params(
-            non_default_params, optional_params, self.model, drop_params=False
-        )
+        result = self.config.map_openai_params(non_default_params, optional_params, self.model, drop_params=False)
 
         assert result["width"] == 800
         assert result["height"] == 600
@@ -109,18 +101,14 @@ class TestBlackForestLabsImageGenerationTransformation:
         optional_params = {}
 
         with pytest.raises(ValueError, match="not supported"):
-            self.config.map_openai_params(
-                non_default_params, optional_params, self.model, drop_params=False
-            )
+            self.config.map_openai_params(non_default_params, optional_params, self.model, drop_params=False)
 
     def test_map_openai_params_unsupported_dropped(self):
         """Test that unsupported params are dropped when drop_params=True."""
         non_default_params = {"unsupported_param": "value"}
         optional_params = {}
 
-        result = self.config.map_openai_params(
-            non_default_params, optional_params, self.model, drop_params=True
-        )
+        result = self.config.map_openai_params(non_default_params, optional_params, self.model, drop_params=True)
 
         assert "unsupported_param" not in result
 
@@ -360,3 +348,171 @@ class TestBlackForestLabsImageGenerationTransformation:
         config = get_black_forest_labs_image_generation_config("flux-pro-1.1")
 
         assert isinstance(config, BlackForestLabsImageGenerationConfig)
+
+
+FLUX_2_ENDPOINTS = {
+    "flux-2-max": "/v1/flux-2-max",
+    "flux-2-pro": "/v1/flux-2-pro",
+    "flux-2-pro-preview": "/v1/flux-2-pro-preview",
+    "flux-2-flex": "/v1/flux-2-flex",
+    "flux-2-klein-9b": "/v1/flux-2-klein-9b",
+    "flux-2-klein-9b-preview": "/v1/flux-2-klein-9b-preview",
+    "flux-2-klein-4b": "/v1/flux-2-klein-4b",
+}
+
+
+class TestFlux2ImageGeneration:
+    """
+    FLUX.2 serves text-to-image and editing from one endpoint per variant, and each
+    variant exposes a different parameter surface than FLUX.1. These tests pin the
+    endpoints and the per-variant request bodies.
+    """
+
+    def setup_method(self):
+        self.config = BlackForestLabsImageGenerationConfig()
+        self.prompt = "A neon-lit alley in the rain"
+
+    @pytest.mark.parametrize("model,endpoint", sorted(FLUX_2_ENDPOINTS.items()))
+    def test_endpoint_per_model(self, model, endpoint):
+        assert self.config._get_model_endpoint(model) == endpoint
+        assert (
+            self.config.get_complete_url(
+                api_base=None,
+                api_key=None,
+                model=f"black_forest_labs/{model}",
+                optional_params={},
+                litellm_params={},
+            )
+            == f"https://api.bfl.ai{endpoint}"
+        )
+
+    def test_flex_exposes_step_control(self):
+        """steps/guidance are the whole point of [flex] and must be settable."""
+        params = self.config.get_supported_openai_params("flux-2-flex")
+
+        assert "steps" in params
+        assert "guidance" in params
+        assert "prompt_upsampling" in params
+
+    @pytest.mark.parametrize(
+        "model", ["flux-2-max", "flux-2-pro", "flux-2-pro-preview", "flux-2-klein-9b", "flux-2-klein-4b"]
+    )
+    def test_step_control_is_flex_only(self, model):
+        params = self.config.get_supported_openai_params(model)
+
+        assert "steps" not in params
+        assert "guidance" not in params
+
+    @pytest.mark.parametrize("model", ["flux-2-klein-9b", "flux-2-klein-9b-preview", "flux-2-klein-4b"])
+    def test_klein_has_no_prompt_upsampling_knob(self, model):
+        """[klein] endpoints reject both prompt_upsampling and disable_pup."""
+        assert "prompt_upsampling" not in self.config.get_supported_openai_params(model)
+
+    @pytest.mark.parametrize("model", sorted(FLUX_2_ENDPOINTS))
+    def test_flux_1_only_params_are_rejected(self, model):
+        """aspect_ratio/raw/num_images/image_prompt_strength do not exist on FLUX.2."""
+        params = self.config.get_supported_openai_params(model)
+
+        assert "aspect_ratio" not in params
+        assert "raw" not in params
+        assert "num_images" not in params
+        assert "image_prompt_strength" not in params
+
+    def test_size_maps_to_width_and_height(self):
+        optional_params = self.config.map_openai_params({"size": "1440x2048"}, {}, "flux-2-pro", drop_params=False)
+
+        assert optional_params == {"width": 1440, "height": 2048}
+
+    def test_request_body_for_pro_inverts_prompt_upsampling(self):
+        """[pro]/[max] spell the upsampling knob as the inverted disable_pup."""
+        body = self.config.transform_image_generation_request(
+            model="black_forest_labs/flux-2-pro",
+            prompt=self.prompt,
+            optional_params={"width": 1440, "height": 2048, "prompt_upsampling": False, "seed": 7},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body == {
+            "prompt": self.prompt,
+            "output_format": "png",
+            "width": 1440,
+            "height": 2048,
+            "seed": 7,
+            "disable_pup": True,
+        }
+
+    def test_request_body_for_pro_keeps_upsampling_enabled(self):
+        body = self.config.transform_image_generation_request(
+            model="flux-2-max",
+            prompt=self.prompt,
+            optional_params={"prompt_upsampling": True},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body["disable_pup"] is False
+        assert "prompt_upsampling" not in body
+
+    def test_request_body_for_flex_passes_step_control(self):
+        body = self.config.transform_image_generation_request(
+            model="flux-2-flex",
+            prompt=self.prompt,
+            optional_params={"steps": 32, "guidance": 4.5, "prompt_upsampling": True},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body["steps"] == 32
+        assert body["guidance"] == 4.5
+        assert body["prompt_upsampling"] is True
+        assert "disable_pup" not in body
+
+    def test_request_body_for_klein_drops_unsupported_fields(self):
+        """Anything [klein] does not accept must not reach the wire, or BFL 422s."""
+        body = self.config.transform_image_generation_request(
+            model="flux-2-klein-4b",
+            prompt=self.prompt,
+            optional_params={"steps": 4, "guidance": 3.0, "prompt_upsampling": True, "seed": 1},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body == {"prompt": self.prompt, "output_format": "png", "seed": 1}
+
+    def test_request_body_drops_flux_1_only_fields(self):
+        body = self.config.transform_image_generation_request(
+            model="flux-2-pro",
+            prompt=self.prompt,
+            optional_params={"aspect_ratio": "16:9", "raw": True, "num_images": 4},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body == {"prompt": self.prompt, "output_format": "png"}
+
+    def test_output_format_can_be_overridden(self):
+        body = self.config.transform_image_generation_request(
+            model="flux-2-flex",
+            prompt=self.prompt,
+            optional_params={"output_format": "webp"},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body["output_format"] == "webp"
+
+    def test_flux_1_request_body_is_unchanged(self):
+        """Regression guard: FLUX.1 keeps its own (permissive) parameter surface."""
+        body = self.config.transform_image_generation_request(
+            model="flux-pro-1.1-ultra",
+            prompt=self.prompt,
+            optional_params={"aspect_ratio": "16:9", "num_images": 2, "raw": True},
+            litellm_params={},
+            headers={},
+        )
+
+        assert body["aspect_ratio"] == "16:9"
+        assert body["num_images"] == 2
+        assert body["raw"] is True
+        assert "disable_pup" not in body

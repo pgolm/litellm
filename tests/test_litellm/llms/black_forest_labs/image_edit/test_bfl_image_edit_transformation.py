@@ -17,9 +17,7 @@ from unittest.mock import MagicMock, patch
 import httpx
 import pytest
 
-sys.path.insert(
-    0, os.path.abspath("../../../../..")
-)  # Adds the parent directory to the system path
+sys.path.insert(0, os.path.abspath("../../../../.."))  # Adds the parent directory to the system path
 
 from litellm.llms.black_forest_labs.image_edit.transformation import (
     BlackForestLabsImageEditConfig,
@@ -104,9 +102,7 @@ class TestBlackForestLabsImageEditTransformation:
         """Test that missing API key raises error."""
         headers = {}
 
-        with patch(
-            "litellm.llms.black_forest_labs.image_edit.transformation.get_secret_str"
-        ) as mock_get_secret:
+        with patch("litellm.llms.black_forest_labs.image_edit.transformation.get_secret_str") as mock_get_secret:
             mock_get_secret.return_value = None
 
             with pytest.raises(BlackForestLabsError) as exc_info:
@@ -304,3 +300,182 @@ class TestBlackForestLabsImageEditTransformation:
     def test_use_multipart_form_data_returns_false(self):
         """Test that use_multipart_form_data returns False for BFL."""
         assert self.config.use_multipart_form_data() is False
+
+
+def _b64(payload: bytes) -> str:
+    return base64.b64encode(payload).decode("utf-8")
+
+
+class TestFlux2ImageEdit:
+    """
+    FLUX.2 edits against up to 8 reference images (4 for [klein]) through the same
+    endpoint it uses for text-to-image, so the references have to be spread over
+    input_image/input_image_2../input_image_N instead of collapsing to the first one.
+    """
+
+    def setup_method(self):
+        self.config = BlackForestLabsImageEditConfig()
+        self.prompt = "Put the chair from the second photo into the first room"
+
+    @pytest.mark.parametrize(
+        "model,endpoint",
+        [
+            ("flux-2-max", "/v1/flux-2-max"),
+            ("flux-2-pro", "/v1/flux-2-pro"),
+            ("flux-2-pro-preview", "/v1/flux-2-pro-preview"),
+            ("flux-2-flex", "/v1/flux-2-flex"),
+            ("flux-2-klein-9b", "/v1/flux-2-klein-9b"),
+            ("flux-2-klein-9b-preview", "/v1/flux-2-klein-9b-preview"),
+            ("flux-2-klein-4b", "/v1/flux-2-klein-4b"),
+        ],
+    )
+    def test_edit_uses_the_same_endpoint_as_generation(self, model, endpoint):
+        assert (
+            self.config.get_complete_url(model=f"black_forest_labs/{model}", api_base=None, litellm_params={})
+            == f"https://api.bfl.ai{endpoint}"
+        )
+
+    def test_single_reference_uses_input_image(self):
+        body, files = self.config.transform_image_edit_request(
+            model="flux-2-pro",
+            prompt=self.prompt,
+            image=b"first",
+            image_edit_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert files == []
+        assert body["input_image"] == _b64(b"first")
+        assert "input_image_2" not in body
+
+    def test_multiple_references_are_numbered_from_two(self):
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-max",
+            prompt=self.prompt,
+            image=[b"first", b"second", b"third"],
+            image_edit_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body["input_image"] == _b64(b"first")
+        assert body["input_image_2"] == _b64(b"second")
+        assert body["input_image_3"] == _b64(b"third")
+        assert "input_image_4" not in body
+
+    def test_eight_references_are_accepted_by_premium_variants(self):
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-flex",
+            prompt=self.prompt,
+            image=[f"ref{index}".encode() for index in range(8)],
+            image_edit_optional_request_params={},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body["input_image"] == _b64(b"ref0")
+        assert body["input_image_8"] == _b64(b"ref7")
+
+    def test_ninth_reference_is_rejected(self):
+        with pytest.raises(BlackForestLabsError, match="at most 8 reference"):
+            self.config.transform_image_edit_request(
+                model="flux-2-pro",
+                prompt=self.prompt,
+                image=[f"ref{index}".encode() for index in range(9)],
+                image_edit_optional_request_params={},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    @pytest.mark.parametrize("model", ["flux-2-klein-9b", "flux-2-klein-9b-preview", "flux-2-klein-4b"])
+    def test_klein_caps_references_at_four(self, model):
+        with pytest.raises(BlackForestLabsError, match="at most 4 reference"):
+            self.config.transform_image_edit_request(
+                model=model,
+                prompt=self.prompt,
+                image=[f"ref{index}".encode() for index in range(5)],
+                image_edit_optional_request_params={},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_empty_image_list_is_rejected(self):
+        with pytest.raises(BlackForestLabsError, match="No image provided"):
+            self.config.transform_image_edit_request(
+                model="flux-2-pro",
+                prompt=self.prompt,
+                image=[],
+                image_edit_optional_request_params={},
+                litellm_params=GenericLiteLLMParams(),
+                headers={},
+            )
+
+    def test_mask_and_expand_params_are_not_supported(self):
+        """FLUX.2 has no fill/expand surface, so those FLUX.1 params must not leak through."""
+        params = self.config.get_supported_openai_params("flux-2-pro")
+
+        for unsupported in ("mask", "grow_mask", "aspect_ratio", "top", "bottom", "left", "right"):
+            assert unsupported not in params
+
+    def test_fill_and_expand_params_never_reach_the_wire(self):
+        """Even if a FLUX.1 param slips past validation it must not be sent to a FLUX.2 endpoint."""
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-klein-4b",
+            prompt=self.prompt,
+            image=b"first",
+            image_edit_optional_request_params={
+                "mask": b"ignored",
+                "aspect_ratio": "16:9",
+                "grow_mask": 8,
+                "top": 64,
+                "steps": 20,
+                "prompt_upsampling": True,
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body == {
+            "prompt": self.prompt,
+            "output_format": "png",
+            "input_image": _b64(b"first"),
+        }
+
+    def test_map_openai_params_keeps_flex_step_control(self):
+        mapped = self.config.map_openai_params(
+            ImageEditOptionalRequestParams(steps=20, guidance=3.5, seed=11),
+            "flux-2-flex",
+            drop_params=False,
+        )
+
+        assert mapped == {"output_format": "png", "steps": 20, "guidance": 3.5, "seed": 11}
+
+    def test_edit_body_inverts_prompt_upsampling_for_pro(self):
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-pro",
+            prompt=self.prompt,
+            image=b"first",
+            image_edit_optional_request_params={"prompt_upsampling": False, "output_format": "jpeg"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body["disable_pup"] is True
+        assert body["output_format"] == "jpeg"
+        assert "prompt_upsampling" not in body
+
+    def test_flux_1_still_collapses_a_list_to_the_first_image(self):
+        """Regression guard: kontext has no multi-reference surface."""
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-kontext-pro",
+            prompt=self.prompt,
+            image=[b"first", b"second"],
+            image_edit_optional_request_params={"aspect_ratio": "1:1"},
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body["input_image"] == _b64(b"first")
+        assert "input_image_2" not in body
+        assert body["aspect_ratio"] == "1:1"

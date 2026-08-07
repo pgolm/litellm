@@ -1046,6 +1046,10 @@ OpenAIImageGenerationOptionalParams = Literal[
     "image_prompt_strength",
     "aspect_ratio",
     "imageConfig",
+    "guidance",
+    "steps",
+    "width",
+    "height",
 ]
 
 OpenAIImageEditOptionalParams = Literal[
