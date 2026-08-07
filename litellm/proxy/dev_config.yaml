@@ -198,13 +198,29 @@ model_list:
       api_key: os.environ/OPENAI_API_KEY
 
   # ---------- Black Forest Labs (FLUX.2) ----------
+  - model_name: flux-2-max
+    litellm_params:
+      model: black_forest_labs/flux-2-max
+      api_key: os.environ/BFL_API_KEY
   - model_name: flux-2-pro
     litellm_params:
       model: black_forest_labs/flux-2-pro
       api_key: os.environ/BFL_API_KEY
+  - model_name: flux-2-pro-preview
+    litellm_params:
+      model: black_forest_labs/flux-2-pro-preview
+      api_key: os.environ/BFL_API_KEY
   - model_name: flux-2-flex
     litellm_params:
       model: black_forest_labs/flux-2-flex
+      api_key: os.environ/BFL_API_KEY
+  - model_name: flux-2-klein-9b
+    litellm_params:
+      model: black_forest_labs/flux-2-klein-9b
+      api_key: os.environ/BFL_API_KEY
+  - model_name: flux-2-klein-9b-preview
+    litellm_params:
+      model: black_forest_labs/flux-2-klein-9b-preview
       api_key: os.environ/BFL_API_KEY
   - model_name: flux-2-klein-4b
     litellm_params:
