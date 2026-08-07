@@ -197,6 +197,24 @@ model_list:
       model: openai/gpt-4o-mini
       api_key: os.environ/OPENAI_API_KEY
 
+  # ---------- Black Forest Labs (FLUX.2) ----------
+  - model_name: flux-2-pro
+    litellm_params:
+      model: black_forest_labs/flux-2-pro
+      api_key: os.environ/BFL_API_KEY
+  - model_name: flux-2-flex
+    litellm_params:
+      model: black_forest_labs/flux-2-flex
+      api_key: os.environ/BFL_API_KEY
+  - model_name: flux-2-klein-4b
+    litellm_params:
+      model: black_forest_labs/flux-2-klein-4b
+      api_key: os.environ/BFL_API_KEY
+  - model_name: flux-kontext-pro
+    litellm_params:
+      model: black_forest_labs/flux-kontext-pro
+      api_key: os.environ/BFL_API_KEY
+
 general_settings:
   master_key: sk-1234
   # Opt-in: let CheckBatchCost track cost for unmanaged batches created with a raw
