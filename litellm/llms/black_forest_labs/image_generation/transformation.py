@@ -229,6 +229,7 @@ class BlackForestLabsImageGenerationConfig(BaseImageGenerationConfig):
         if flux_2_spec is not None:
             return build_flux_2_request_body(
                 spec=flux_2_spec,
+                model=model,
                 prompt=prompt,
                 optional_params=optional_params,
             )

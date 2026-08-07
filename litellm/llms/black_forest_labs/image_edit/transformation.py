@@ -17,6 +17,7 @@ from httpx._types import RequestFiles
 
 import litellm
 from litellm.constants import DEFAULT_MAX_RECURSE_DEPTH
+from litellm.exceptions import BadRequestError
 from litellm.litellm_core_utils.url_utils import safe_get
 from litellm.llms.base_llm.image_edit.transformation import BaseImageEditConfig
 from litellm.secret_managers.main import get_secret_str
@@ -241,6 +242,7 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
             return (
                 self._transform_flux_2_edit_request(
                     spec=flux_2_spec,
+                    model=model,
                     prompt=prompt or "",
                     images=images,
                     optional_params=image_edit_optional_request_params,
@@ -275,18 +277,20 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
     def _transform_flux_2_edit_request(
         self,
         spec: Flux2ModelSpec,
+        model: str,
         prompt: str,
         images: Sequence[FileTypes],
         optional_params: Mapping[str, object],
     ) -> dict[str, object]:
         """Build a FLUX.2 edit body, spreading the references over ``input_image``/``input_image_N``."""
         if len(images) > spec.max_reference_images:
-            raise BlackForestLabsError(
-                status_code=400,
+            raise BadRequestError(
                 message=(
                     f"{spec.endpoint} accepts at most {spec.max_reference_images} reference "
                     f"image(s), got {len(images)}."
                 ),
+                model=model,
+                llm_provider="black_forest_labs",
             )
 
         references: Final = tuple(
@@ -298,6 +302,7 @@ class BlackForestLabsImageEditConfig(BaseImageEditConfig):
         )
         return build_flux_2_request_body(
             spec=spec,
+            model=model,
             prompt=prompt,
             optional_params=optional_params,
             extra_fields=references,

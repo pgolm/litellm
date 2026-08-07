@@ -12,6 +12,7 @@ from pathlib import Path
 
 import pytest
 
+from litellm.exceptions import BadRequestError
 from litellm.llms.black_forest_labs.common_utils import (
     FLUX_2_MODELS,
     IMAGE_EDIT_MODELS,
@@ -123,12 +124,51 @@ class TestFlux2Registry:
         assert flux_2_reference_image_field(1) == "input_image_2"
         assert flux_2_reference_image_field(7) == "input_image_8"
 
-    def test_non_boolean_prompt_upsampling_is_not_coerced(self):
-        """A stray string must not silently flip disable_pup the wrong way."""
+    @pytest.mark.parametrize(
+        ("raw", "expected_disable_pup"),
+        [("true", False), ("false", True), (True, False), (False, True)],
+    )
+    def test_multipart_prompt_upsampling_reaches_the_wire(self, raw, expected_disable_pup):
+        """A multipart edit request delivers booleans as strings; they must still map to disable_pup."""
         body = build_flux_2_request_body(
             spec=FLUX_2_MODELS["flux-2-pro"],
+            model="flux-2-pro",
             prompt="x",
-            optional_params={"prompt_upsampling": "false"},
+            optional_params={"prompt_upsampling": raw},
+        )
+
+        assert body["disable_pup"] is expected_disable_pup
+
+    def test_multipart_numeric_params_are_coerced_to_numbers(self):
+        """Strings from a multipart request must not be forwarded verbatim to BFL."""
+        body = build_flux_2_request_body(
+            spec=FLUX_2_MODELS["flux-2-flex"],
+            model="flux-2-flex",
+            prompt="x",
+            optional_params={"steps": "8", "guidance": "2.5", "seed": "99", "safety_tolerance": "2"},
+        )
+
+        assert body["steps"] == 8
+        assert body["guidance"] == 2.5
+        assert body["seed"] == 99
+        assert body["safety_tolerance"] == 2
+
+    def test_uncoercible_param_raises_bad_request(self):
+        with pytest.raises(BadRequestError, match="Invalid parameter for flux-2-flex"):
+            build_flux_2_request_body(
+                spec=FLUX_2_MODELS["flux-2-flex"],
+                model="flux-2-flex",
+                prompt="x",
+                optional_params={"steps": "not-a-number"},
+            )
+
+    def test_prompt_upsampling_is_dropped_for_klein(self):
+        """[klein] has no upsampling surface, so neither wire field may appear."""
+        body = build_flux_2_request_body(
+            spec=FLUX_2_MODELS["flux-2-klein-4b"],
+            model="flux-2-klein-4b",
+            prompt="x",
+            optional_params={"prompt_upsampling": "true"},
         )
 
         assert "disable_pup" not in body

@@ -10,8 +10,10 @@ from types import MappingProxyType
 from typing import Final, Literal
 from urllib.parse import urlparse
 
+from pydantic import BaseModel, ConfigDict, ValidationError
 from typing_extensions import assert_never
 
+from litellm.exceptions import BadRequestError
 from litellm.llms.base_llm.chat.transformation import BaseLLMException
 from litellm.types.llms.openai import OpenAIImageGenerationOptionalParams
 
@@ -166,8 +168,30 @@ def flux_2_reference_image_field(index: int) -> str:
     return "input_image" if index == 0 else f"input_image_{index + 1}"
 
 
+class Flux2WireParams(BaseModel):
+    """The tunable FLUX.2 wire fields, coerced to the types the BFL API expects.
+
+    A multipart ``/v1/images/edits`` request delivers every field as a string, so
+    ``steps=8`` arrives as ``"8"`` and ``prompt_upsampling=true`` as ``"true"``.
+    Pydantic's lax coercion normalizes both those and the already-typed values a
+    JSON ``/v1/images/generations`` request carries.
+    """
+
+    model_config = ConfigDict(extra="ignore")
+
+    width: int | None = None
+    height: int | None = None
+    seed: int | None = None
+    safety_tolerance: int | None = None
+    output_format: str | None = None
+    guidance: float | None = None
+    steps: int | None = None
+    prompt_upsampling: bool | None = None
+
+
 def build_flux_2_request_body(
     spec: Flux2ModelSpec,
+    model: str,
     prompt: str,
     optional_params: Mapping[str, object],
     extra_fields: tuple[tuple[str, object], ...] = (),
@@ -176,26 +200,41 @@ def build_flux_2_request_body(
 
     ``extra_fields`` carries already-encoded fields the caller owns, such as the
     ``input_image``/``input_image_N`` references of an edit request.
+
+    Raises:
+        BadRequestError: If a caller-supplied param cannot be coerced to its wire type.
     """
+    params: Final = _parse_flux_2_params(model=model, optional_params=optional_params)
     passthrough: Final = tuple(
-        (key, value) for key, value in optional_params.items() if key in spec.request_params and value is not None
+        (key, value) for key, value in params.model_dump(exclude_none=True).items() if key in spec.request_params
     )
     return dict(  # mutable-ok: the BaseImageGenerationConfig/BaseImageEditConfig contract returns a real dict
         (
             ("prompt", prompt),
             ("output_format", DEFAULT_OUTPUT_FORMAT),
             *passthrough,
-            *_flux_2_prompt_upsampling_entry(spec, optional_params.get("prompt_upsampling")),
+            *_flux_2_prompt_upsampling_entry(spec, params.prompt_upsampling),
             *extra_fields,
         )
     )
 
 
+def _parse_flux_2_params(model: str, optional_params: Mapping[str, object]) -> Flux2WireParams:
+    try:
+        return Flux2WireParams.model_validate(optional_params)
+    except ValidationError as e:
+        raise BadRequestError(
+            message=f"Invalid parameter for {model}: {e}",
+            model=model,
+            llm_provider="black_forest_labs",
+        ) from e
+
+
 def _flux_2_prompt_upsampling_entry(
     spec: Flux2ModelSpec,
-    prompt_upsampling: object,
+    prompt_upsampling: bool | None,
 ) -> tuple[tuple[str, bool], ...]:
-    if not isinstance(prompt_upsampling, bool):
+    if prompt_upsampling is None:
         return ()
 
     match spec.prompt_upsampling_field:

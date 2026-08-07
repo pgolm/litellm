@@ -22,6 +22,7 @@ sys.path.insert(0, os.path.abspath("../../../../.."))  # Adds the parent directo
 from litellm.llms.black_forest_labs.image_edit.transformation import (
     BlackForestLabsImageEditConfig,
 )
+from litellm.exceptions import BadRequestError
 from litellm.llms.black_forest_labs.common_utils import BlackForestLabsError
 from litellm.types.images.main import ImageEditOptionalRequestParams
 from litellm.types.router import GenericLiteLLMParams
@@ -378,7 +379,8 @@ class TestFlux2ImageEdit:
         assert body["input_image_8"] == _b64(b"ref7")
 
     def test_ninth_reference_is_rejected(self):
-        with pytest.raises(BlackForestLabsError, match="at most 8 reference"):
+        """Too many references is caller error: it must surface as a 400, not a 500."""
+        with pytest.raises(BadRequestError, match="at most 8 reference") as excinfo:
             self.config.transform_image_edit_request(
                 model="flux-2-pro",
                 prompt=self.prompt,
@@ -388,9 +390,11 @@ class TestFlux2ImageEdit:
                 headers={},
             )
 
+        assert excinfo.value.status_code == 400
+
     @pytest.mark.parametrize("model", ["flux-2-klein-9b", "flux-2-klein-9b-preview", "flux-2-klein-4b"])
     def test_klein_caps_references_at_four(self, model):
-        with pytest.raises(BlackForestLabsError, match="at most 4 reference"):
+        with pytest.raises(BadRequestError, match="at most 4 reference") as excinfo:
             self.config.transform_image_edit_request(
                 model=model,
                 prompt=self.prompt,
@@ -399,6 +403,29 @@ class TestFlux2ImageEdit:
                 litellm_params=GenericLiteLLMParams(),
                 headers={},
             )
+
+        assert excinfo.value.status_code == 400
+
+    def test_multipart_params_reach_the_wire_typed(self):
+        """A multipart edit request delivers every field as a string; BFL needs real types."""
+        body, _ = self.config.transform_image_edit_request(
+            model="flux-2-flex",
+            prompt=self.prompt,
+            image=b"ref",
+            image_edit_optional_request_params={
+                "steps": "8",
+                "guidance": "2.5",
+                "seed": "99",
+                "prompt_upsampling": "true",
+            },
+            litellm_params=GenericLiteLLMParams(),
+            headers={},
+        )
+
+        assert body["steps"] == 8
+        assert body["guidance"] == 2.5
+        assert body["seed"] == 99
+        assert body["prompt_upsampling"] is True
 
     def test_empty_image_list_is_rejected(self):
         with pytest.raises(BlackForestLabsError, match="No image provided"):
