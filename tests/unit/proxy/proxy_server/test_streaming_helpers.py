@@ -583,6 +583,41 @@ def test_serialize_streaming_chunk_invalid_input_raises_attribute_error():
         _serialize_streaming_chunk({"not": "a model"})  # type: ignore[arg-type]
 
 
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="The proxy streaming serializer drops top-level Perplexity source fields",
+)
+@pytest.mark.parametrize("model", ("sonar", "sonar-pro"))
+@pytest.mark.parametrize("source_field", ("citations", "search_results"))
+def test_streaming_sse_preserves_perplexity_sources(
+    model: str, source_field: Literal["citations", "search_results"]
+) -> None:
+    sources: Final = {
+        "citations": ["https://example.com/one", "https://example.com/two"],
+        "search_results": [
+            {"title": "Source one", "url": "https://example.com/one"},
+            {"title": "Source two", "url": "https://example.com/two"},
+        ],
+    }
+    chunk: Final = ModelResponseStream(
+        id="chatcmpl-perplexity-sources",
+        created=1,
+        model=model,
+        choices=[StreamingChoices(index=0, delta=Delta(content="Answer [1][2]", role="assistant"))],
+        **sources,
+    )
+    canonical_payload: Final = json.loads(chunk.model_dump_json(exclude_none=True, exclude_unset=True))
+    assert canonical_payload[source_field] == sources[source_field]
+
+    sse: Final = _format_streaming_sse_chunk(_serialize_streaming_chunk(chunk))
+    sse_text: Final = sse.decode() if isinstance(sse, bytes) else sse
+    payload: Final = json.loads(sse_text.removeprefix("data: ").strip())
+
+    assert payload["choices"][0]["delta"]["content"] == chunk.choices[0].delta.content
+    assert payload.get(source_field) == sources[source_field]
+
+
 # ---------------------------------------------------------------------------
 # _apply_streaming_chunk_hooks
 # ---------------------------------------------------------------------------

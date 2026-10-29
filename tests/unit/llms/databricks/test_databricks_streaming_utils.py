@@ -8,7 +8,7 @@ set. `chunk_parser` previously did `choices[0]` unconditionally, raising
 """
 
 import json
-from typing import Final
+from typing import Final, Literal
 
 import httpx
 import pytest
@@ -16,6 +16,42 @@ import respx
 
 import litellm
 from litellm.llms.databricks.streaming_utils import ModelResponseIterator
+
+
+@pytest.mark.xfail(
+    strict=True,
+    raises=AssertionError,
+    reason="The OpenAI-like HTTP streaming parser drops Perplexity source fields",
+)
+@pytest.mark.parametrize("model", ("sonar", "sonar-pro"))
+@pytest.mark.parametrize("source_field", ("citations", "search_results"))
+def test_http_stream_parser_preserves_perplexity_sources(
+    model: str, source_field: Literal["citations", "search_results"]
+) -> None:
+    sources: Final = {
+        "citations": ["https://example.com/one", "https://example.com/two"],
+        "search_results": [
+            {"title": "Source one", "url": "https://example.com/one"},
+            {"title": "Source two", "url": "https://example.com/two"},
+        ],
+    }
+    upstream: Final = {
+        "id": "chatcmpl-perplexity-sources",
+        "object": "chat.completion.chunk",
+        "created": 1,
+        "model": model,
+        "choices": [{"index": 0, "delta": {"content": "Answer [1][2]"}}],
+        **sources,
+    }
+    iterator: Final = ModelResponseIterator(
+        streaming_response=iter((f"data: {json.dumps(upstream)}", "data: [DONE]")),
+        sync_stream=True,
+    )
+
+    parsed: Final = next(iterator)
+
+    assert parsed["text"] == upstream["choices"][0]["delta"]["content"]
+    assert (parsed.get("provider_specific_fields") or {}).get(source_field) == sources[source_field]
 
 
 def test_chunk_parser_handles_empty_choices_usage_chunk():
